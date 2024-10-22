@@ -1,3 +1,5 @@
+import threading
+import keyboard
 import requests
 import csv
 from datetime import datetime
@@ -6,6 +8,7 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+
 
 # ESP32 configuration
 ESP32_IP = "192.168.0.41"
@@ -108,12 +111,24 @@ def plot_thermal_image(row_data, timestamp, image_folder):
     plt.close()
     print(f"Image saved as {image_filename}")
 
+# สร้าง event flag สำหรับควบคุมการทำงาน
+stop_flag = threading.Event()
+
+def key_listener():
+    """ฟังก์ชันสำหรับตรวจจับการกดปุ่ม"""
+    while not stop_flag.is_set():
+        if keyboard.is_pressed('q'):  # เปลี่ยนจาก space เป็น 'q'
+            print("\nStop key pressed! Stopping data collection...")
+            stop_flag.set()
+            break
+        time.sleep(0.1)
+    
+
+
 def main():
     today_folder, data_folder, image_folder = create_folders_for_today()
     start_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     csv_file = os.path.join(data_folder, f"{start_time}.csv")
-
-    # Create a subfolder for this run's images
     run_image_folder = os.path.join(image_folder, start_time)
     os.makedirs(run_image_folder, exist_ok=True)
 
@@ -123,41 +138,52 @@ def main():
     print("3 = both hands")
     print("4 = non-request")
     print("5 = test")
-    choice = input("กรุณากดหมายเลขที่ต้องการ: ")
+    print("Press 'q' to quit.")  # เปลี่ยนข้อความแจ้งเตือน
 
-    if choice == '1':
-        label = 'left hand'
-    elif choice == '2':
-        label = 'right hand'
-    elif choice == '3':
-        label = 'both hands'
-    elif choice == '4':
-        label = 'non-request'
-    elif choice == '5':
-        label = 'test'
-    else:
-        print("Invalid choice! Defaulting to 'non-request'.")
-        label = 'non-request'
+    # เริ่ม thread สำหรับตรวจจับการกดปุ่ม
+    key_thread = threading.Thread(target=key_listener)
+    key_thread.daemon = True  # ให้ thread จบการทำงานเมื่อโปรแกรมหลักจบ
+    key_thread.start()
 
-    start_time = time.time()
-    elapsed_time = 0
+    choice = input("Enter label choice (or 'q' to quit): ")
+    
+    if choice == 'q':
+        print("Exiting data collection...")
+        return
 
-    while elapsed_time < 10:
-        data = get_thermal_data()
-        if data:
-            current_timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
-            save_to_csv(data, csv_file, label)
-            print(f"Data saved to {csv_file}")
-            
-            plot_thermal_image([current_timestamp] + data + [label], current_timestamp, run_image_folder)
-        else:
-            print("Failed to get data")
+    label = {
+        '1': 'left hand',
+        '2': 'right hand',
+        '3': 'both hands',
+        '4': 'non-request',
+        '5': 'test'
+    }.get(choice, 'non-request')
 
-        time.sleep(0)
-        elapsed_time = time.time() - start_time
+    print(f"Starting data collection with label: {label}")
+    print("Press 'q' to stop collection")
 
-    print(f"Data collection complete. CSV file saved in {data_folder}")
-    print(f"Thermal images saved in {run_image_folder}")
+    try:
+        while not stop_flag.is_set():
+            data = get_thermal_data()
+            if data:
+                current_timestamp = datetime.now().strftime("%Y-%m-%d %H-%M-%S")
+                save_to_csv(data, csv_file, label)
+                print(f"Data saved at {current_timestamp}", end='\r')
+                
+                plot_thermal_image([current_timestamp] + data + [label], 
+                                 current_timestamp, 
+                                 run_image_folder)
+
+            time.sleep(0)
+
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user")
+    finally:
+        stop_flag.set()
+        key_thread.join(timeout=1)
+        print(f"\nData collection complete.")
+        print(f"CSV file saved in {data_folder}")
+        print(f"Thermal images saved in {run_image_folder}")
 
 
 if __name__ == "__main__":
